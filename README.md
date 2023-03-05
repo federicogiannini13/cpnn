@@ -1,4 +1,4 @@
-# NN4SML
+# cPNN
 This repository contains the code used for the experimentation shown in the paper.
 
 ## 1) Installation
