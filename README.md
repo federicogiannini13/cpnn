@@ -2,7 +2,10 @@
 This repository contains the code used for the experimentation shown in the paper.
 
 ## 1) Installation
-execute `pip install -r requirements.txt` .
+execute:
+`conda create -n gim python=3.8`
+`pip install -r requirements.txt`
+`conda activate gim`
 
 ## 2) Project structure
 The project is composed by the following directories.
