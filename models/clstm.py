@@ -6,9 +6,9 @@ import numpy as np
 class cLSTMLinear(nn.Module):
     def __init__(
         self,
-        input_size,
+        input_size=2,
         device=torch.device("cpu"),
-        hidden_size=128,
+        hidden_size=50,
         output_size=2,
         batch_size=128,
     ):

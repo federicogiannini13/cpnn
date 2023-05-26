@@ -1,4 +1,6 @@
 import torch
+import numpy as np
+from sklearn.metrics import accuracy_score
 
 
 def get_pred_from_outputs(outputs):
@@ -84,6 +86,32 @@ def cohen_kappa(outputs, targets, device=torch.device("cpu")):
     p_e = _pe_kappa(outputs, targets, device=device)
     model_kappa = (model_accuracy - p_e) / (1 - p_e)
     model_kappa = torch.nan_to_num(model_kappa, nan=0, posinf=0, neginf=0)
+    return model_kappa
+
+def kappa_temporal_score(y_true:np.array, y_pred:np.array, first_label=None):
+    """
+    Parameters
+    ----------
+    y_true: np.array
+        The numpy array containing the real labels of the batch.
+    y_pred: np.array
+        The numpy array containing the predicted labels of the batch.
+    first_label: int, default: None
+        It represents the real label of the last sample before the current batch.
+        It is used, for the naive approach to predict the first data point's label of the current batch.
+        If None, a random label is generated.
+    Returns
+    -------
+    kappa_temporal : float
+        The evaluated kappa temporal on the batch
+    """
+    if first_label is None:
+        first_label = np.random.randint(0, 2, (1,))
+    naive_predictions = np.concatenate([first_label, y_true[:-1]])
+    naive_accuracy = accuracy_score(y_true, naive_predictions)
+    model_accuracy = accuracy_score(y_true, y_pred)
+    model_kappa = (model_accuracy - naive_accuracy) / (1 - naive_accuracy)
+    model_kappa = np.nan_to_num(model_kappa, nan=0, posinf=0, neginf=0)
     return model_kappa
 
 

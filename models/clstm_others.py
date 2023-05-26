@@ -33,7 +33,7 @@ class cLSTMLinearCombinationDifferentWeights(cLSTMLinear):
     def __init__(
         self,
         input_size,
-        n_modules,
+        n_columns,
         device=torch.device("cpu"),
         hidden_size=128,
         output_size=2,
@@ -43,7 +43,7 @@ class cLSTMLinearCombinationDifferentWeights(cLSTMLinear):
             input_size, device, hidden_size, output_size, batch_size
         )
         self.linear_combination = [
-            nn.Linear(hidden_size, hidden_size) for i in range(0, n_modules)
+            nn.Linear(hidden_size, hidden_size) for i in range(0, n_columns)
         ]
         for l in self.linear_combination:
             l.to(self.device)
