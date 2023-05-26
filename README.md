@@ -4,11 +4,11 @@ This repository contains the code used for the experimentation shown in the pape
 ## 1) Installation
 execute:
 
-`conda create -n gim python=3.8`
+`conda create -n cpnn python=3.8`
+
+`conda activate cpnn`
 
 `pip install -r requirements.txt`
-
-`conda activate gim`
 
 ## 2) Project structure
 The project is composed by the following directories.
