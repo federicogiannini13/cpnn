@@ -51,3 +51,6 @@ It performs all the mentioned tests in Section 5.
 It stores the results in `performance/<data_stream_name>/_prob_test/test_complete_<data_stream_name>` in .csv and .xlsx format.
 #### lab/generate_sine_rw:
 It generates a new data stream containing concepts S1+, S2+, S1-, S2- and stores it in the dataset folder.
+
+## Credits
+https://github.com/AndreaCossu/ContinualLearning-SequentialProcessing
