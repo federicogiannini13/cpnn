@@ -55,4 +55,5 @@ It generates a new data stream containing concepts S1+, S2+, S1-, S2- and stores
 
 ## Credits
 https://github.com/AndreaCossu/ContinualLearning-SequentialProcessing
+
 https://github.com/alvarolemos/pyism
