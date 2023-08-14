@@ -11,7 +11,7 @@ import pickle
 import argparse
 
 # EDITABLE PARAMETERS
-dataset = "sine_rw_10_1234_5lags"
+dataset = "sine_rw_10_1234"
 
 # OTHER PARAMETERS
 batch_size = 128
