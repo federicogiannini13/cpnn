@@ -46,9 +46,7 @@ class cPNNSeq:
         kwargs:
             Parameters of column_class.
         """
-        self.columns = cPNNColumns(
-            column_class, device, lr, seq_len, stride, True, **kwargs
-        )
+        self.columns = cPNNColumns(column_class, device, lr, **kwargs)
         if first_label_kappa is None:
             self.first_label_kappa = np.random.randint(0, 2)
         else:

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from sklearn.metrics import accuracy_score, cohen_kappa_score
+import warnings
 
 from models.cpnn_columns import cPNNColumns
 from models.utils import (
@@ -35,13 +36,16 @@ class cPNN:
         train_verbose: bool = False,
         concepts_boundaries: list = None,
         combination: bool = False,
-        remember_initial_states: bool = False,
+        anytime_learner: bool = False,
+        loss_on_seq: bool = False,
+        remember_states: bool = False,
+        quantize: bool = False,
         **kwargs,
     ):
         """
         Parameters
         ----------
-        column_class: default: iLSTM.
+        column_class: default: cLSTMLinear.
             The class that implements the column.
         device: default: None.
             Torch's device, if None its value is set to 'cpu'.
@@ -55,7 +59,7 @@ class cPNN:
             The label of the last sample before the start of the stream, it is used to compute the kappa_temporal.
             If None a random label is generated.
         train_epochs: int, default: 10.
-            Training epochs to perform in learn_many method.
+            In case of anytime_learner=False, the training epochs to perform in learn_many method.
         train_verbose: bool, default:False.
             True if, during the learn_many execution, you want to print the metrics after each training epoch.
         concepts_boundaries: list, default:None.
@@ -64,43 +68,195 @@ class cPNN:
         combination: bool, default: False.
             If True each cPNN column combines all previous columns.
             If False each cPNN column takes only last column.
-        remember_initial_states: bool, default: False.
-            If True model's initial states of batch n are initialized using model's final states of batch n-1.
-            If False all batches' model's initial states are initialized as zeros.
+        anytime_learner: bool, default: False.
+            If True the model learns data point by data point by data point.
+            Otherwise, il learns batch by batch.
+        loss_on_seq: bool, default: False.
+            In case of anytime_learner = False, if True the model considers only past temporal dependencies. The model
+            is a many_to_one model and each data point's prediction is associated to the first sequence in which
+            it appears.
+            If False, the model considers both past and future temporal dependencies.The model is a many_to_many model
+            and each data point's prediction is the average prediction between all the sequences in which it appears.
+        remember_states: bool, default: False
+            In case of anytime learner and cGRU, if True the initial h0 is set as h1 of the previous sequence.
+        quantize: bool, default: False
+            If True, after a concept drift, the column is quantized.
         kwargs:
             Parameters of column_class.
         """
+        self.anytime_learner = anytime_learner
+        if self.anytime_learner:
+            self.loss_on_seq = True
+            self.many_to_one = True
+            self.remember_states = remember_states
+        else:
+            self.loss_on_seq = loss_on_seq
+            if loss_on_seq:
+                self.many_to_one = True
+            else:
+                self.many_to_one = False
+            self.remember_states = False
+
         self.columns_args = kwargs
         self.columns_args["column_class"] = column_class
         self.columns_args["device"] = device
         self.columns_args["lr"] = lr
-        self.columns_args["stride"] = stride
         self.columns_args["combination"] = combination
-        self.columns_args["seq_len"] = seq_len
-        self.columns = cPNNColumns(
-            **self.columns_args
-        )
-        self._seq_len = seq_len
+        self.columns_args["remember_states"] = self.remember_states
+        self.columns_args["many_to_one"] = self.many_to_one
+        self.columns_args["quantize"] = quantize
+        self.columns = cPNNColumns(**self.columns_args)
+        self.seq_len = seq_len
+        self.stride = stride
         self.train_epochs = train_epochs
         self.train_verbose = train_verbose
         self.concept_boundaries = concepts_boundaries
         self.samples_cont = 0
-        self.remember_initial_states = remember_initial_states
-        self.previous_data_points_anytime = None
+        self.previous_data_points_anytime_inference = None
+        self.previous_data_points_anytime_train = None
+        self.previous_data_points_batch_train = None
+        self.previous_data_points_batch_test = None
+
         if first_label_kappa is not None:
             self.first_label_kappa = torch.tensor([first_label_kappa]).view(1)
         else:
             self.first_label_kappa = torch.randint(0, 2, (1,)).view(1)
 
     def get_seq_len(self):
-        return self._seq_len
+        return self.seq_len
+
+    def _cut_in_sequences(self, x, y):
+        seqs_features = []
+        seqs_targets = []
+        for i in range(0, len(x), self.stride):
+            if len(x) - i >= self.seq_len:
+                seqs_features.append(x[i : i + self.seq_len, :].astype(np.float32))
+                if y is not None:
+                    seqs_targets.append(
+                        np.asarray(y[i : i + self.seq_len], dtype=np.int_)
+                    )
+        return np.asarray(seqs_features), np.asarray(seqs_targets)
+
+    def _cut_in_sequences_tensors(self, x, y):
+        seqs_features = []
+        seqs_targets = []
+        for i in range(0, x.size()[0], self.stride):
+            if x.size()[0] - i >= self.seq_len:
+                seqs_features.append(
+                    x[i : i + self.seq_len, :].view(1, self.seq_len, x.size()[1])
+                )
+                seqs_targets.append(y[i : i + self.seq_len].view(1, self.seq_len))
+        seq_features = torch.cat(seqs_features, dim=0)
+        seqs_targets = torch.cat(seqs_targets, dim=0)
+        return seq_features, seqs_targets
+
+    def _convert_to_tensor_dataset(self, x, y=None):
+        """
+        It converts the dataset in order to be inputted to cPNN, by building the different sequences and
+        converting them to TensorDataset.
+
+        Parameters
+        ----------
+        x: numpy.array
+            The features values of the batch.
+        y: list, default: None
+            The target values of the batch. If None only features will be loaded.
+        Returns
+        -------
+        dataset: torch.data_utils.TensorDataset
+            The tensor dataset representing the different sequences.
+            The features values have shape: (batch_size - seq_len + 1, seq_len, n_features)
+            The target values have shape: (batch_size - seq_len + 1, seq_len)
+        """
+        x, y = self._cut_in_sequences(x, y)
+        x = torch.tensor(x)
+        if len(y) > 0:
+            y = torch.tensor(y).type(torch.LongTensor)
+            return data_utils.TensorDataset(x, y)
+        return x
+
+    def _load_batch(self, x: np.array, y: np.array = None):
+        """
+        It transforms the batch in order to be inputted to cPNN, by building the different sequences and
+        converting them to tensors.
+
+        Parameters
+        ----------
+        x: numpy.array
+            The features values of the batch.
+        y: list, default: None.
+            The target values of the batch. If None only features will be loaded.
+        Returns
+        -------
+        x: torch.Tensor
+            The features values of the created sequences. It has shape: (batch_size - seq_len + 1, seq_len, n_features)
+        y: torch.Tensor
+            The target values of the samples in the batc. It has length: batch_size. If y is None it returns None.
+        y_seq: torch.Tensor
+            The target values of the created sequences. It has shape: (batch_size - seq_len + 1, seq_len). If y is None it returns None.
+        """
+        batch = self._convert_to_tensor_dataset(x, y)
+        batch_loader = DataLoader(
+            batch, batch_size=batch.tensors[0].size()[0], drop_last=False
+        )
+        y_seq = None
+        for x, y_seq in batch_loader:  # only to take x and y from loader
+            break
+        y = torch.tensor(y)
+        return x, y, y_seq
 
     def add_new_column(self):
         """
         It adds a new column to the cPNN architecture, after a concept drift.
         """
-        self.reset_previous_data_points_anytime()
+        self.reset_previous_data_points()
         self.columns.add_new_column()
+
+    def learn_one(self, x:np.array, y: np.array, previous_data_points: np.array = None):
+        """
+        It trains cPNN on a single data point.
+        Before performing the training, if concept_boundaries was provided during the constructor method, it
+        automatically adds a new column after concept drift.
+        *ONLY FOR ANYTIME LEARNER*
+
+        Parameters
+        ----------
+        x: numpy.array or list
+            The features values of the single data point.
+        y: numpy.array or list
+            The target value of the single data point.
+        previous_data_points: numpy.array, default: None.
+            The features value of the data points preceding x in the sequence.
+            If None, it uses the last seq_len-1 points seen during the last calls of the method.
+            It returns None if the model has not seen yet seq_len-1 data points and previous_data_points is None.
+        """
+        if not self.anytime_learner:
+            warnings.warn(
+                "The model is a batch learner, it cannot learn from a single data point.\n" +
+                "Call learn_many on a batch containing a single sequence"
+            )
+            return None
+        if self.concept_boundaries is not None and len(self.concept_boundaries) > 0:
+            if self.samples_cont >= self.concept_boundaries[0]:
+                print("New column added")
+                self.add_new_column()
+                self.concept_boundaries = self.concept_boundaries[1:]
+
+        x = np.array(x).reshape(1, -1)
+        y = np.array(y).reshape(1, -1)
+        if previous_data_points is not None:
+            self.previous_data_points_anytime_train = previous_data_points
+        if self.previous_data_points_anytime_train is None:
+            self.previous_data_points_anytime_train = x
+            return None
+        if len(self.previous_data_points_anytime_train) != self.seq_len - 1:
+            self.previous_data_points_anytime_train = np.concatenate(
+                [self.previous_data_points_anytime_train, x])
+            return None
+        self.previous_data_points_anytime_train = np.concatenate([self.previous_data_points_anytime_train, x])
+        x, y, _ = self._load_batch(self.previous_data_points_anytime_train, y)
+        self._fit(x, y.view(-1))
+        self.previous_data_points_anytime_train = self.previous_data_points_anytime_train[1:]
 
     def learn_many(self, x: np.array, y: np.array) -> dict:
         """
@@ -108,6 +264,7 @@ class cPNN:
         It computes the loss after averaging each sample's predictions.
         Before performing the training, if concept_boundaries was provided during the constructor method, it
         automatically adds a new column after concept drift.
+        *ONLY FOR BATCH LEARNER*
 
         Parameters
         ----------
@@ -123,6 +280,12 @@ class cPNN:
             The following metrics are computed: accuracy, loss, kappa, kappa_temporal.
             For each metric the dict contains a list of epochs' values.
         """
+        if self.anytime_learner:
+            warnings.warn(
+                "The model is an anytime learner, it cannot learn from batch.\n" +
+                "Loop on learn_one method to learn from multiple data points"
+            )
+            return {}
         if self.concept_boundaries is not None and len(self.concept_boundaries) > 0:
             if self.samples_cont >= self.concept_boundaries[0]:
                 print("New column added")
@@ -131,7 +294,16 @@ class cPNN:
 
         x = np.array(x)
         y = list(y)
-        x, y, y_seq = self.columns.load_batch(x, y)
+        first_batch = False
+        if self.loss_on_seq:
+            if self.previous_data_points_batch_train is None:
+                first_batch = True
+            else:
+                x = np.concatenate([x, self.previous_data_points_batch_train], axis=0)
+                self.previous_data_points_batch_train = x[-(self.seq_len-1):]
+        x, y, y_seq = self._load_batch(x, y)
+        if first_batch:
+            y = y[self.seq_len - 1:]
 
         perf_train = {
             "accuracy": [],
@@ -140,7 +312,7 @@ class cPNN:
             "kappa_temporal": [],
         }
         for e in range(1, self.train_epochs + 1):
-            perf_epoch = self._train_batch(x, y)
+            perf_epoch = self._fit(x, y)
             if self.train_verbose:
                 print(
                     "Training epoch ",
@@ -179,13 +351,33 @@ class cPNN:
         predictions: numpy.array
             The 1D numpy array (with length batch_size) containing predictions of all samples.
         """
+        if self.anytime_learner:
+            if self.anytime_learner:
+                warnings.warn(
+                    "The model is an anytime learner, it cannot predict a batch of data.\n" +
+                    "Loop on predict_one method to predict on multiple data points"
+                )
+                return None
         x = np.array(x)
         if x.shape[0] < self.get_seq_len():
             return np.array([None] * x.shape[0])
-        x = self.columns.convert_to_tensor_dataset(x).to(self.columns.device)
+        first_train = False
+        if self.loss_on_seq:
+            if self.previous_data_points_batch_train is not None:
+                x = np.concatenate([x, self.previous_data_points_batch_train], axis=0)
+                self.previous_data_points_batch_train = x[-(self.seq_len-1):]
+            else:
+                first_train = True
+        x = self._convert_to_tensor_dataset(x).to(self.columns.device)
         with torch.no_grad():
-            pred, _= get_pred_from_outputs(get_samples_outputs(self.columns(x, column_id)))
-            return pred.detach().cpu().numpy()
+            outputs = self.columns(x, column_id)
+            if not self.loss_on_seq:
+                outputs = get_samples_outputs(outputs)
+            pred, _ = get_pred_from_outputs(outputs)
+            pred = pred.detach().cpu().numpy()
+            if first_train:
+                return np.concatenate([np.array([None for _ in range(self.seq_len-1)]), pred], axis=0)
+            return pred
 
     def predict_one (self, x : np.array, column_id: int = None, previous_data_points: np.array = None):
         """
@@ -206,30 +398,34 @@ class cPNN:
         prediction : int
             The predicted int label of x.
         """
-        x = np.array(x)
-        x = x.reshape(1, -1)
+        x = np.array(x).reshape(1, -1)
         if previous_data_points is not None:
-            self.previous_data_points_anytime = previous_data_points
-        if self.previous_data_points_anytime is None:
-            self.previous_data_points_anytime = x
+            self.previous_data_points_anytime_inference = previous_data_points
+        if self.previous_data_points_anytime_inference is None:
+            self.previous_data_points_anytime_inference = x
             return None
-        if len(self.previous_data_points_anytime) != self._seq_len - 1:
-            self.previous_data_points_anytime = np.concatenate([self.previous_data_points_anytime, x])
+        if len(self.previous_data_points_anytime_inference) != self.seq_len - 1:
+            self.previous_data_points_anytime_inference = np.concatenate([self.previous_data_points_anytime_inference, x])
             return None
-        self.previous_data_points_anytime = np.concatenate([self.previous_data_points_anytime, x])
-        x = self.columns.convert_to_tensor_dataset(self.previous_data_points_anytime).to(self.columns.device)
-        self.previous_data_points_anytime = self.previous_data_points_anytime[1:]
+        self.previous_data_points_anytime_inference = np.concatenate([self.previous_data_points_anytime_inference, x])
+        x = self._convert_to_tensor_dataset(self.previous_data_points_anytime_inference).to(self.columns.device)
+        self.previous_data_points_anytime_inference = self.previous_data_points_anytime_inference[1:]
         with torch.no_grad():
-            pred, _ = get_pred_from_outputs(self.columns(x, column_id)[0])
+            if not self.loss_on_seq:
+                pred, _ = get_pred_from_outputs(self.columns(x, column_id)[0])
+            else:
+                pred, _ = get_pred_from_outputs(self.columns(x, column_id))
             return int(pred[-1].detach().cpu().numpy())
 
     def get_n_columns(self):
         return len(self.columns.columns)
 
-    def reset_previous_data_points_anytime(self):
-        self.previous_data_points_anytime = None
+    def reset_previous_data_points(self):
+        self.previous_data_points_batch_train = None
+        self.previous_data_points_anytime_train = None
+        self.previous_data_points_anytime_inference = None
 
-    def test_many_with_single_pred(self, x: np.array, y: np.array,  column_id: int = None) -> dict:
+    def test_many_anytime(self, x: np.array, y: np.array, column_id: int = None) -> dict:
         """
         It tests cPNN on a single batch, by computing the metrics after averaging each data point's predictions.
         Each prediction is made on the single data point individually.
@@ -262,6 +458,7 @@ class cPNN:
     def test_many(self, x: np.array, y: np.array, column_id: int = None) -> dict:
         """
         It tests cPNN on a single batch, by computing the metrics after averaging each data point's predictions.
+        *ONLY FOR BATCH LEARNER*
 
         Parameters
         ----------
@@ -278,7 +475,13 @@ class cPNN:
             The dictionary representing test's performance.
             The following metrics are computed: accuracy, kappa, kappa_temporal.
         """
-        if x.shape[0] < self._seq_len:
+        if self.anytime_learner:
+            warnings.warn(
+                "The model is an anytime learner, it cannot learn from batch.\n" +
+                "You cannot call this method"
+            )
+            return {}
+        if x.shape[0] < self.seq_len:
             return {k: None for k in ["accuracy", "kappa", "kappa_temporal"]}
 
         y_pred = self.predict_many(x, column_id)
@@ -297,10 +500,11 @@ class cPNN:
         x: np.array,
         y: np.array,
         column_id: int = None,
-    ) -> (dict, dict, dict):
+    ) -> tuple:
         """
         It tests cPNN on a single batch, and then it performs the training.
         It computes the loss after averaging each sample's predictions.
+        *ONLY FOR BATCH LEARNER*
 
         Parameters
         ----------
@@ -324,7 +528,13 @@ class cPNN:
             For each metric the dict contains a list of epochs' values.
             The following metrics are computed: accuracy, loss, kappa, kappa_temporal.
         """
-        perf_test_single_pred = self.test_many_with_single_pred(x, y)
+        if self.anytime_learner:
+            warnings.warn(
+                "The model is an anytime learner, it cannot learn from batch.\n" +
+                "You cannot call this method"
+            )
+            return ()
+        perf_test_single_pred = self.test_many_anytime(x, y)
         perf_test = self.test_many(x, y, column_id)
         perf_train = self.learn_many(x, y)
         self.first_label_kappa = torch.tensor(y[-1]).view(1)
@@ -335,6 +545,7 @@ class cPNN:
     ) -> dict:
         """
         It performs the pretraining on a pretraining set.
+        *ONLY FOR BATCH LEARNER*
 
         Parameters
         ----------
@@ -355,6 +566,13 @@ class cPNN:
             For each metric the dict contains a list of shape (epochs, n_batches) where n_batches is the training
             batches number.
         """
+        if self.anytime_learner:
+            warnings.warn(
+                "The model is an anytime learner, it cannot learn from batch.\n" +
+                "You cannot call this method"
+            )
+            return {}
+
         perf_train = {
             "accuracy": [],
             "loss": [],
@@ -374,25 +592,26 @@ class cPNN:
                 print(
                     f"{id_batch+1}/{len(loader)} batch of {e}/{epochs} epoch", end="\r"
                 )
-                x, y_seq = self.columns.cut_in_sequences_tensors(x, y)
-                perf_batch = self._train_batch(x, y)
+                x, y_seq = self._cut_in_sequences_tensors(x, y)
+                perf_batch = self._fit(x, y)
                 for k in perf_batch:
                     perf_train[k][-1].append(perf_batch[k])
         print()
         print()
         return perf_train
 
-    def _train_batch(self, x, y):
+    def _fit(self, x, y):
         x, y = x.to(self.columns.device), y.to(self.columns.device)
-        outputs = get_samples_outputs(self.columns(x))
+        outputs = self.columns(x, train=True)
+        if not self.loss_on_seq:
+            outputs = get_samples_outputs(outputs)
         loss = customized_loss(outputs, y, self.columns.criterion)
         self.columns.optimizers[-1].zero_grad()
         loss.backward()
         self.columns.optimizers[-1].step()
-        out, initial_states = self.columns(x, return_initial_states=True)
-        if self.remember_initial_states:
-            self.columns.update_initial_states(initial_states)
-        outputs = get_samples_outputs(out)
+        outputs = self.columns(x)
+        if not self.loss_on_seq:
+            outputs = get_samples_outputs(outputs)
         perf_train = {
             "loss": loss.item(),
             "accuracy": accuracy(outputs, y).item(),

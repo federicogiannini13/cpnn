@@ -19,18 +19,8 @@ class cPNNExp(cPNN):
         concepts_boundaries: list = None,
         **kwargs,
     ):
-        super(cPNNExp, self).__init__(
-            column_class,
-            device,
-            lr,
-            seq_len,
-            stride,
-            first_label_kappa,
-            train_epochs,
-            train_verbose,
-            concepts_boundaries,
-            **kwargs,
-        )
+        super(cPNNExp, self).__init__(column_class, device, lr, seq_len, stride, first_label_kappa, train_epochs,
+                                      train_verbose, concepts_boundaries, **kwargs)
         self.columns = cPNNColumnsExp(
             column_class, device, lr, seq_len, stride, False, **kwargs
         )
