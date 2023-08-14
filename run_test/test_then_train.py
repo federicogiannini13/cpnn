@@ -18,7 +18,7 @@ batch_size = 128
 hidden_size = 50
 seq_len = 10
 # TODO
-iterations = 5
+iterations = 1
 loss_on_seq = False
 freeze_inputs_weights = False
 pretraining_samples = 0
@@ -80,18 +80,9 @@ if not os.path.isdir(path_anytime):
 def create_cpnn():
     if not loss_on_seq:
         if not freeze_inputs_weights:
-            return cPNN(
-                column_class=model_class,
-                input_size=len(df.columns) - 2,
-                hidden_size=hidden_size,
-                output_size=2,
-                batch_size=batch_size,
-                device=device,
-                seq_len=seq_len,
-                train_verbose=False,
-                combination=combination,
-                remember_initial_states=rembember_initial_states,
-            )
+            return cPNN(column_class=model_class, device=device, seq_len=seq_len, train_verbose=False,
+                        combination=combination, input_size=len(df.columns) - 2, hidden_size=hidden_size, output_size=2,
+                        batch_size=batch_size)
         else:
             return cPNNExp(
                 column_class=model_class,
@@ -205,7 +196,7 @@ if __name__ == "__main__":
                             )
                             inputs[-1][-1].append(
                                 models[-1][-1]
-                                .columns.convert_to_tensor_dataset(x_test)
+                                .columns._convert_to_tensor_dataset(x_test)
                                 .detach()
                                 .numpy()
                             )
