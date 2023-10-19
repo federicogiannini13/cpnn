@@ -6,7 +6,6 @@ import numpy as np
 import statistics as st
 
 
-
 class RandomWalkGenerator:
     def __init__(
         self,
@@ -26,7 +25,7 @@ class RandomWalkGenerator:
         sine_c1: float = None,
         sine_c2: float = None,
         sine_c3: float = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Parameters
@@ -202,8 +201,10 @@ class RandomWalkGenerator:
         self.k1 = k1
         self.k2 = k2
         if self.distribution_name == "random":
-            distributions = ['uniform', 'normal', 'beta', 'f', 'chi2']
-            self.distribution_name = distributions[np.random.randint(0, len(distributions))]
+            distributions = ["uniform", "normal", "beta", "f", "chi2"]
+            self.distribution_name = distributions[
+                np.random.randint(0, len(distributions))
+            ]
         if self.distribution_name == "uniform":
             self.distribution = self._sample_uniform
         elif self.distribution_name == "normal":
@@ -246,23 +247,25 @@ class RandomWalkGenerator:
     def _classify_sine3(self, x):
         return 0 if (x[0] - self._sin_23(x)) < 0 else 1
 
-    def _change_label (self, value):
+    def _change_label(self, value):
         x_new = self.data.iloc[-1, :-1].to_dict()
         x_new[self.data.columns[0]] = (
-                self._sine_func(x_new)
-                + self._sign[value] * 2 * self.max_increment
-                + self._sign[value] * self.distribution() * self.max_increment
+            self._sine_func(np.array([x_new[k] for k in x_new]))
+            + self._sign[value] * 2 * self.max_increment
+            + self._sign[value] * self.distribution() * self.max_increment
         )
         self.actual_max_consecutive_labels = np.random.randint(
             int(self.max_consecutive_labels / 5), self.max_consecutive_labels + 1
         )
         return x_new
 
-    def _generate_new_example(
-        self
-    ):
+    def _generate_new_example(self):
         x_new = {}
-        idx = 1 if self.actual_max_consecutive_labels == -1 else self.actual_max_consecutive_labels
+        idx = (
+            1
+            if self.actual_max_consecutive_labels == -1
+            else self.actual_max_consecutive_labels
+        )
         vc = self.data[self.class_col].iloc[-idx:].value_counts().reset_index()
         value = vc.iloc[0, 0]
         count = vc.iloc[0, 1]
@@ -272,13 +275,20 @@ class RandomWalkGenerator:
             for c in [col for col in self.data.columns if col != self.class_col]:
                 if self.data[c].iloc[-1] + self.max_increment >= self.features_range[1]:
                     sign = -1
-                elif self.data[c].iloc[-1] - self.max_increment <= self.features_range[0]:
+                elif (
+                    self.data[c].iloc[-1] - self.max_increment <= self.features_range[0]
+                ):
                     sign = 1
                 else:
                     sign = [-1, 1][np.random.randint(0, 2)]
-                x_new[c] = self.data[c].iloc[-1] + sign * self.distribution() * self.max_increment
+                x_new[c] = (
+                    self.data[c].iloc[-1]
+                    + sign * self.distribution() * self.max_increment
+                )
         x_new[self.class_col] = self.classify(np.array([x_new[k] for k in x_new]))
-        self.data = pd.concat([self.data, pd.DataFrame.from_dict({k: [v] for k, v in x_new.items()})])
+        self.data = pd.concat(
+            [self.data, pd.DataFrame.from_dict({k: [v] for k, v in x_new.items()})]
+        )
 
     def _sample_normal(self):
         x = np.random.normal()
@@ -300,15 +310,13 @@ class RandomWalkGenerator:
         return scipy.stats.f(self.k1, self.k2).cdf(x)
 
     def _add_target_dependencies(self, temporal_order=5, n_start=0, col_label="target"):
-        new_targets = list(self.data[col_label].iloc[:n_start+1])
+        new_targets = list(self.data[col_label].iloc[: n_start + 1])
         if n_start == 0:
             n_start = 1
         for i in range(n_start, len(self.data)):
             new_targets.append(
                 st.mode(
-                    self.data.iloc[
-                        max(0, i - temporal_order + 1):i + 1
-                    ][col_label]
+                    self.data.iloc[max(0, i - temporal_order + 1) : i + 1][col_label]
                 )
             )
         self.data = self.data.rename(columns={"target": "classification"})
@@ -347,8 +355,10 @@ class RandomWalkGenerator:
         """
         if self.data is None:
             x = {
-                f"x{i}": [np.random.uniform(self.features_range[0], self.features_range[1])]
-                for i in range(1, self.n_features+1)
+                f"x{i}": [
+                    np.random.uniform(self.features_range[0], self.features_range[1])
+                ]
+                for i in range(1, self.n_features + 1)
             }
             x[self.class_col] = [self.classify(np.array([x[k] for k in x]))]
             self.data = pd.DataFrame.from_dict(x)
@@ -359,13 +369,15 @@ class RandomWalkGenerator:
             n_start = len(self.data)
 
         if self.max_consecutive_labels != -1:
-            self.actual_max_consecutive_labels = np.random.randint(1, self.max_consecutive_labels + 1)
+            self.actual_max_consecutive_labels = np.random.randint(
+                1, self.max_consecutive_labels + 1
+            )
         else:
             self.actual_max_consecutive_labels = -1
 
         for i in range(start, n_examples):
             self._generate_new_example()
-            if (i+1) % 5 == 0:
+            if (i + 1) % 5 == 0:
                 print(i + 1, "/", n_examples, end="\r")
         print()
 
