@@ -1,7 +1,5 @@
-# cPNN
+# A-cPNN, Q-cPNN, F-cPNN
 This repository contains the code used for the experimentation shown in the paper.
-
-Link to the paper: https://link.springer.com/chapter/10.1007/978-3-031-33383-5_26
 
 ## 1) Installation
 execute:
@@ -16,14 +14,20 @@ execute:
 The project is composed by the following directories.
 #### datasets
 It contains the generated data streams.
-* **sine_rw_10_13**: S1+, S1-.
-* **sine_rw_10_31**: S1-, S1+.
-* **sine_rw_10_24**: S2+, S1-.
-* **sine_rw_10_42**: S2-, S2+.
-* **sine_rw_10_1234**: S1+, S2+, S1-, S2-.
-* **sine_rw_10_1432**: S1+, S2-, S1-, S2+.
-* **sine_rw_10_2143**: S2+, S1+, S2-, S1-.
-* **sine_rw_10_2341**: S2+, S1-, S2-, S1+.
+Each file's name has the following structure: **<generator>_<configuration>.csv**.
+
+**Generators:**
+* sine_rw10_mode5: Sine RW Mode.
+* generalized_sine_rw10_mode5: Generalized Sine RW Mode.
+* weather: Weather.
+
+**Configurations:**
+* 1conf: S1+, S2+, S1-, S2- for Sine RW Mode, W1+ W2+ W1- W2- for Weather.
+* 2conf: S1+, S2-, S1-, S2+ for Sine RW Mode, W1+ W2- W1- W2+ for Weather.
+* 3conf: S2+, S1+, S2-, S1- for Sine RW Mode, W2+ W1+ W2- W1- for Weather.
+* 4conf: S2+, S1-, S2-, S1+ for Sine RW Mode, W2+ W1- W2- W1+ for Weather.
+
+
 #### lab
 It contains Jupyter Notebooks.
 #### models
