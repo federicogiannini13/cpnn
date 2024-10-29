@@ -1,5 +1,5 @@
 # cPNN
-This repository contains the code used for the experimentation shown in the paper.
+This repository contains the code used for the experimentation shown in the paper presented at the 27th Pacific-Asia Conference on Knowledge Discovery and Data Mining.
 
 Link to the paper: https://link.springer.com/chapter/10.1007/978-3-031-33383-5_26
 
